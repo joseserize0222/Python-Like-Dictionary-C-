@@ -1,0 +1,268 @@
+#pragma once
+
+// `dict.hpp` part of header only solution.
+
+#pragma once
+
+#include <string>
+#include <map>
+#include <vector>
+#include <memory>
+#include <any>
+#include <stdexcept>
+#include <iostream>
+#include <cxxabi.h>
+#include <initializer_list>
+
+namespace utils {
+
+    struct no_key_exception : public std::exception {
+        [[nodiscard]] const char* what() const throw () override {
+            return "Key not found";
+        }
+    };
+
+    struct invalid_type_exception : public std::exception {
+        [[nodiscard]] const char* what() const throw () override {
+            return "Invalid type for the key";
+        }
+    };
+
+    struct Base {
+        virtual Base= default;
+        [[nodiscard]] virtual const std::type_info& type() const = 0;
+        virtual bool operator==(const Base& other) const = 0;
+    };
+
+    template<typename T>
+    struct Model : Base {
+
+        template<typename U>
+        explicit Model(U&& t) : instance(std::forward<U>(t)) {
+            std::cout << "Model Constructor\n";
+        }
+
+        [[nodiscard]] const std::type_info& type() const override {
+            return typeid(T);
+        }
+
+        bool operator==(const Base& other) const override {
+            if (type() == other.type()) {
+                const auto* otherModel = dynamic_cast<const Model<T>*>(&other);
+                if (otherModel) {
+                    return instance == otherModel->instance;
+                }
+            }
+            return false;
+        }
+
+        T instance;
+    };
+
+    class Object {
+    public:
+
+        Object() = default;
+
+        template<typename T>
+        Object(T&& value)  {
+            std::cout << "Object custom constructor\n";
+            *this = std::forward<std::decay_t<T>>(value);
+        }
+
+        template<typename T>
+        Object& operator=(T&& value) {
+            std::cout << "Object custom assignment constructor\n";
+            Model<T>* m = new Model<std::decay_t<T>>(std::forward<T>(value));
+            instance.reset(m, std::default_delete<Model<T>>{});
+            return *this;
+        }
+
+        Object(std::initializer_list<std::pair<const std::string, Object>> list);
+
+        [[nodiscard]] const std::type_info& type() const {
+            return instance->type();
+        }
+
+        [[nodiscard]] bool is_same_type(const Object &other) const {
+            return type() == other.type();
+        }
+
+        template<typename T>
+        const T& as() const {
+            if (typeid(T) == instance->type()) {
+                return static_cast<const Model<T>*>(instance.get())->instance;
+            }
+            throw std::bad_cast();
+        }
+
+        bool operator==(const Object &other) const {
+            return is_same_type(other) && (*instance == *other.instance);
+        }
+
+        template<typename T>
+        const T& getObject() const {
+            return *(getObjectPtr<T>());
+        }
+
+        template<typename T>
+        const T* getObjectPtr() const {
+            std::cout << "let's obtain the pointer" << typeid(T).name() << "\n";
+            if (type() == typeid(T)) {
+                std::cout << "the type is compatible" << "\n";
+                const Model<T> *aux = static_cast<const Model<T>*>(instance.get());
+                std::cout << typeid(*aux).name() << "\n";
+                std::cout << typeid(aux->instance).name() << "\n";
+                std::cout << "returning the pointer\n";
+                std::cout << std::addressof(aux->instance) << " " << &(aux->instance) << std::endl;
+                return &(aux->instance);
+            }
+            throw std::bad_cast();
+        }
+
+        [[nodiscard]] std::string typeName() const {
+            int status;
+            return abi::__cxa_demangle(type().name(), 0, 0, &status);
+        }
+
+        std::shared_ptr<Base> instance;
+    };
+
+    class dict_t;
+
+    class dict_t {
+    public:
+
+        dict_t() {
+            std::cout << "default constructor for dict_t\n";
+        }
+
+        dict_t(std::initializer_list<std::pair<const std::string, Object>> list) {
+            std::cout << "with initializer";
+            for (auto& [key, value] : list) {
+                data[key] = value;
+            }
+        }
+
+        dict_t(const dict_t& other) {
+            *this = other;
+        }
+
+        dict_t(dict_t&& other) noexcept : data(std::move(other.data)) {
+            std::cout << "move constructor dict_t\n";
+        }
+
+        dict_t& operator=(const dict_t& other) {
+            std::cout << "assignment constructor dict_t\n";
+            if (this != &other) {
+                data.clear();  // Clear existing data
+                for (const auto& pair : other.data) {
+                    data[pair.first] = pair.second;
+                }
+            }
+            return *this;
+        }
+
+        dict_t& operator=(dict_t&& other) noexcept {
+            std::cout << "move assign constructor dict_t\n";
+            if (this != &other) {
+                data = std::move(other.data);  // Move the map
+                other.clear();
+            }
+            return *this;
+        }
+
+        bool put(const std::string& key, Object&& value) {
+            std::cout << "Putting (move)\n";
+            data[key] = std::move(value);
+            return true;
+        }
+
+        bool put(const std::string& key, const Object& value) {
+            std::cout << "Putting (copy)\n";
+            data[key] = value;
+            return true;
+        }
+
+        template<typename T>
+        [[nodiscard]] const T* get_ptr(const std::string &key) const {
+            auto result = data.find(key);
+            return (result == data.end() || result->second.type() != typeid(T)) ?
+                nullptr : result->second.getObjectPtr<T>();
+        }
+
+        template<typename T>
+        const T& get(const std::string &key) const {
+            // const T* ptr = get_ptr<T>(key);
+            auto result = data.find(key);
+            // auto& tmp = std::dynamic_pointer_cast<Model<T>>(result->second.instance)->instance;
+            auto* res = dynamic_cast<Model<T> *>(result->second.instance.get());
+            return res->instance;
+            /*
+            return tmp;
+            // std::cout << static_cast<const dict_t*>(ptr)->size() << std::endl;
+            std::cout << std::addressof(*ptr) << std::endl;
+            std::cout << "key: " << key << std::endl;
+            std::cout << "contains: " << (data.find(key) != data.end()) << std::endl;
+            if (!ptr) {
+                if (data.find(key) == data.end()) {
+                    throw no_key_exception();
+                } else {
+                    throw invalid_type_exception();
+                }
+            }
+            return *ptr;
+        */
+             }
+
+        bool remove(const std::string &key) {
+            if (contains(key)) {
+                data.erase(data.find(key));
+                return true;
+            }
+            return false;
+        }
+
+        bool contains(const std::string &key) {
+            return data.find(key) != data.end();
+        }
+
+        bool empty() const {
+            return data.empty();
+        }
+
+        bool is_dict (const std::string &key) const {
+            return get_ptr<dict_t>(key) != nullptr;
+        }
+
+        void clear() {
+            data.clear();
+        }
+
+        bool operator==(const dict_t &other) const {
+            return data == other.data;
+        }
+
+        bool operator!=(const dict_t &other) const {
+            return !(*this == other);
+        }
+
+        const std::map<std::string, Object>& getData() const {
+            return data;
+        }
+
+        std::size_t size() const {
+            return data.size();
+        }
+    private:
+        std::map<std::string, Object> data;
+
+        template<class U>
+        friend struct Model;
+    };
+
+    Object::Object(std::initializer_list<std::pair<const std::string, Object>> list) : Object(dict_t(list)) {
+        std::cout << "sera este?";
+    }
+
+} // namespace utils
